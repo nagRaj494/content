@@ -9,8 +9,8 @@ def main
     policies_whitelist = [1389, 1263, 1320, 1267, 1345, 1337, 1316, 1344, 1408]
 
     # Grab all policies
-    sr = ScriptRock.new
-    all_policies = sr.get_policies
+    ug = UpGuard.new
+    all_policies = ug.get_policies
     all_policies.each do |p|
         policies.push(p["id"])
     end 
@@ -28,16 +28,16 @@ def main
     end    
 
     # Delete!
-    sr.delete_policies(policies)
+    ug.delete_policies(policies)
 
 end    
 
-class ScriptRock
+class UpGuard
 
     $api_key = '<<< API_KEY >>>' 
     $secret_key = '<<< SECRET_KEY >>>'
-    $website = 'https://guardrail.scriptrock.com'
-    $policies_index_api = '/api/v1/policies'
+    $website = 'https://app.upguard.com'
+    $policies_index_api = '/api/v2/policies'
 
     def delete_policies(policies)
 
