@@ -16,13 +16,18 @@ Puppet::Reports.register_report(:upguard) do
     raise(Puppet::ParserError, "upguard.yaml file is invalid")
   end
 
-  APPLIANCE_URL      = config[:appliance_url]
-  PUPPETDB_URL       = config[:puppetdb_url]
-  COMPILE_MASTER_PEM = config[:compile_master_pem]
-  SERVICE_KEY        = config[:service_key]
-  SECRET_KEY         = config[:secret_key]
-  API_KEY            = "#{SERVICE_KEY}#{SECRET_KEY}"
-  DOMAINS            = config[:domains]
+  APPLIANCE_URL            = config[:appliance_url]
+  PUPPETDB_URL             = config[:puppetdb_url]
+  COMPILE_MASTER_PEM       = config[:compile_master_pem]
+  SERVICE_KEY              = config[:service_key]
+  SECRET_KEY               = config[:secret_key]
+  API_KEY                  = "#{SERVICE_KEY}#{SECRET_KEY}"
+  DOMAINS                  = config[:domains]
+  ENVIRONMENT              = config[:environment]
+  TEST_OS                  = config[:test_os]
+  TEST_LINUX_HOSTNAME      = config[:test_linux_hostname]
+  TEST_WINDOWS_HOSTNAME    = config[:test_windows_hostname]
+  UNKNOWN_OS_NODE_GROUP_ID = config[:unknown_os_node_group_id]
 
   def process
     Puppet.info("upguard: starting report processor #{VERSION}")
@@ -34,21 +39,25 @@ Puppet::Reports.register_report(:upguard) do
     Puppet.info("upguard: SECRET_KEY=#{SECRET_KEY}")
     Puppet.info("upguard: API_KEY=#{API_KEY}")
     Puppet.info("upguard: DOMAINS=#{DOMAINS}")
+    Puppet.info("upguard: ENVIRONMENT=#{ENVIRONMENT}")
+    Puppet.info("upguard: TEST_OS=#{TEST_OS}")
+    Puppet.info("upguard: TEST_LINUX_HOSTNAME=#{TEST_LINUX_HOSTNAME}")
+    Puppet.info("upguard: TEST_WINDOWS_HOSTNAME=#{TEST_WINDOWS_HOSTNAME}")
+    Puppet.info("upguard: UNKNOWN_OS_NODE_GROUP_ID=#{UNKNOWN_OS_NODE_GROUP_ID}")
 
     self.status != nil ? status = self.status : status = 'undefined'
 
     Puppet.info("upguard: status=#{status}")
 
     # For most scenarios, make sure the node is added to upguard and is being scanned.
-    if status == 'changed'
+    if test_env ? status == 'unchanged' : status == 'changed'
 
       ##########################################################################
       # PUPPET DB (PDB) METHODS                                                #
       ##########################################################################
 
       # Get the node name
-      node_ip_hostname = self.host
-      Puppet.info("#{log_prefix} node_ip_hostname=#{node_ip_hostname}")
+      node_ip_hostname = pdb_get_hostname(self.host)
       # We use this to tag node scans with the puppet "file(s)" that have caused the change
       manifest_filename = pdb_manifest_files(self.logs)
       # Used to set the node OS type in UpGuard
@@ -173,6 +182,15 @@ Puppet::Reports.register_report(:upguard) do
   # HELPER METHODS                                                            #
   #############################################################################
 
+  # Used for debugging (shortcuts needing to use PDB).
+  def test_env
+    if ENVIRONMENT.is_a?(String) && ENVIRONMENT == "test"
+      true
+    else
+      false
+    end
+  end
+
   # Format logs in a consistent, easily grep-able way.
   def log_prefix
     if self.host
@@ -230,8 +248,25 @@ Puppet::Reports.register_report(:upguard) do
   # PUPPET DB (PDB) METHODS                                                   #
   #############################################################################
 
+  def pdb_get_hostname(node_ip_hostname)
+    if test_env
+      node_ip_hostname = "puppet-tst-#{rand(100...999).to_s}.domain.com"
+      Puppet.info("#{log_prefix} node_ip_hostname=#{node_ip_hostname}")
+      node_ip_hostname
+    else
+      Puppet.info("#{log_prefix} node_ip_hostname=#{node_ip_hostname}")
+      node_ip_hostname
+    end
+  end
+
   # Get trusted facts from Puppet.
   def pdb_get_trusted_facts(node_ip_hostname)
+    if test_env
+      trusted_facts = '[{"certname":"host-name-01.domain.com","name":"trusted","value":{"authenticated":"remote","certname":"host-name-01.domain.com","domain":"domain.com","extensions":{"company_trusted_swimlane":"n/a","pp_datacenter":"mtv","pp_environment":"prod","pp_product":"test","pp_role":"test_test"},"hostname":"host-name-01"},"environment":"tier2"}]'
+      trusted_facts = JSON.load(trusted_facts)
+      return trusted_facts
+    end
+
     response = `curl -X GET #{PUPPETDB_URL}/pdb/query/v4/nodes/#{node_ip_hostname}/facts -d 'query=["in", ["name","certname"], ["extract", ["name","certname"], ["select_fact_contents", ["and", ["=", "path", ["trusted", "authenticated"]], ["=","value","remote"]]]]]' --tlsv1 --cacert /etc/puppetlabs/puppet/ssl/certs/ca.pem --cert /etc/puppetlabs/puppet/ssl/certs/#{COMPILE_MASTER_PEM} --key /etc/puppetlabs/puppet/ssl/private_keys/#{COMPILE_MASTER_PEM}`
     Puppet.info("#{log_prefix} trusted facts for #{node_ip_hostname} is: response=#{response}")
     trusted_facts = JSON.load(response)
@@ -262,6 +297,12 @@ Puppet::Reports.register_report(:upguard) do
 
   # Get the node OS. This isn't something that trusted facts can tell us.
   def pdb_get_os(hostname)
+    if test_env
+      os = TEST_OS
+      Puppet.info("#{log_prefix} os: #{os}")
+      return os
+    end
+
     response = `curl -X GET #{PUPPETDB_URL}/pdb/query/v4/facts/operatingsystem --data-urlencode 'query=["=", "certname", "#{hostname}"]' --tlsv1 --cacert /etc/puppetlabs/puppet/ssl/certs/ca.pem --cert /etc/puppetlabs/puppet/ssl/certs/#{COMPILE_MASTER_PEM} --key /etc/puppetlabs/puppet/ssl/private_keys/#{COMPILE_MASTER_PEM}`
     Puppet.info("#{log_prefix} get_os: response=#{response}")
     os_details = JSON.load(response)
@@ -276,6 +317,13 @@ Puppet::Reports.register_report(:upguard) do
 
   # Work out what Puppet files made the "change". We use this to tag the node scan in UpGuard.
   def pdb_manifest_files(logs)
+    if test_env
+      manifest_filename = "test node scan"
+      manifest_filename = ERB::Util.url_encode(manifest_filename)
+      Puppet.info("#{log_prefix} manifest_filename=#{manifest_filename}")
+      return manifest_filename
+    end
+
     manifest_filename = []
     default = ERB::Util.url_encode("puppet run")
 
@@ -374,6 +422,11 @@ Puppet::Reports.register_report(:upguard) do
     node[:node] = {}
     node[:node][:name] = "#{ip_hostname}"
     node[:node][:external_id] = "#{ip_hostname}"
+    if test_env && TEST_OS == 'windows'
+      ip_hostname = TEST_WINDOWS_HOSTNAME
+    elsif test_env && TEST_OS == 'centos'
+      ip_hostname = TEST_LINUX_HOSTNAME
+    end
     node[:node][:medium_hostname] = "#{ip_hostname}"
     node[:node][:short_description] = "#{VERSION_TAG}"
     node[:node][:connection_manager_group_id] = "#{domain_details['id']}"
@@ -409,7 +462,7 @@ Puppet::Reports.register_report(:upguard) do
     if node["id"]
       if os && os.downcase != 'windows' && os.downcase != 'centos'
         Puppet.info("#{log_prefix} adding node to unclassified node group")
-        unclassified_resp = add_to_node_group(api_key, instance, node["id"], 29)
+        unclassified_resp = upguard_add_to_node_group(api_key, instance, node["id"], UNKNOWN_OS_NODE_GROUP_ID)
         Puppet.info("#{log_prefix} adding node to unclassified node group response=#{unclassified_resp}")
       end
 
@@ -423,7 +476,7 @@ Puppet::Reports.register_report(:upguard) do
 
   # Kick off a node scan
   def upguard_node_scan(api_key, instance, node_id, tag)
-    response = `curl -X POST -s -k -H 'Authorization: Token token="#{api_key}"' -H 'Accept: application/json' -H 'Content-Type: application/json' #{instance}/api/v2/nodes/#{node_id}/start_scan.json`
+    response = `curl -X POST -s -k -H 'Authorization: Token token="#{api_key}"' -H 'Accept: application/json' -H 'Content-Type: application/json' #{instance}/api/v2/nodes/#{node_id}/start_scan.json?label=#{tag}`
     Puppet.info("#{log_prefix} node_scan response=#{response}")
     JSON.load(response)
   end
